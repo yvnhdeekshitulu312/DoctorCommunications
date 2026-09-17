@@ -1,0 +1,14 @@
+@DoctorCommunications_HostAddress = https://localhost:7217
+
+GET {{DoctorCommunications_HostAddress}}/api/users/connection/4470
+Accept: application/json
+
+###
+
+GET {{DoctorCommunications_HostAddress}}/api/conversations/pending/4470
+Accept: application/json
+
+###
+
+GET {{DoctorCommunications_HostAddress}}/api/conversations/mine/4470
+Accept: application/json
