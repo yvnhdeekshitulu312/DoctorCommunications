@@ -1,10 +1,39 @@
 ﻿// Program.cs
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;
+using Serilog;
+using Serilog.Events;
 
-var builder = WebApplication.CreateBuilder(args);
+// Rolling daily file under Data/ next to the app itself (AppContext.BaseDirectory,
+// not a relative path) — works the same whether run via `dotnet run`, IIS
+// in-process hosting, or a raw `dotnet DoctorCommunications.dll`. This is what
+// you check after a deploy instead of needing stdoutLogEnabled flipped in web.config.
+var logPath = Path.Combine(AppContext.BaseDirectory, "Data", "app-.log");
 
-// ── Services ──────────────────────────────────────────────────────────
+// Bootstrap logger: catches failures that happen before the real host finishes
+// building (bad connection string, config errors) — without this, a startup
+// crash under IIS produces nothing anywhere to look at.
+Log.Logger = new LoggerConfiguration()
+    .MinimumLevel.Information()
+    .WriteTo.Console()
+    .WriteTo.File(logPath, rollingInterval: RollingInterval.Day, retainedFileCountLimit: 14)
+    .CreateBootstrapLogger();
+
+try
+{
+    Log.Information("Starting DoctorCommunications API");
+
+    var builder = WebApplication.CreateBuilder(args);
+
+    builder.Host.UseSerilog((context, config) => config
+        .MinimumLevel.Information()
+        .MinimumLevel.Override("Microsoft.AspNetCore", LogEventLevel.Warning)
+        .MinimumLevel.Override("Microsoft.EntityFrameworkCore", LogEventLevel.Warning)
+        .Enrich.FromLogContext()
+        .WriteTo.Console()
+        .WriteTo.File(logPath, rollingInterval: RollingInterval.Day, retainedFileCountLimit: 14));
+
+    // ── Services ──────────────────────────────────────────────────────────
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 builder.Services.AddSignalR(options =>
@@ -40,6 +69,12 @@ builder.Services.AddCors(options =>
 });
 
 var app = builder.Build();
+
+// One line per HTTP request (method, path, status code, elapsed ms) — this is
+// the line to check first after a deploy: if a request never shows up here at
+// all, IIS isn't forwarding it to this process (an Application/routing issue
+// on the server, not this code).
+app.UseSerilogRequestLogging();
 
 // ── Middleware ─────────────────────────────────────────────────────────
 if (app.Environment.IsDevelopment())
@@ -193,6 +228,15 @@ app.MapGet("/api/agora/token", (string channelName, uint uid) =>
 });
 
 app.Run();
+}
+catch (Exception ex)
+{
+    Log.Fatal(ex, "DoctorCommunications API terminated unexpectedly during startup");
+}
+finally
+{
+    Log.CloseAndFlush();
+}
 
 // ─────────────────────────────────────────────────────────────────────
 // Models & helpers
