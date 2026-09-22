@@ -42,7 +42,13 @@ builder.Services.AddCors(options =>
 var app = builder.Build();
 
 // ── Middleware ─────────────────────────────────────────────────────────
-if (app.Environment.IsDevelopment())
+// Swagger enabled for Development and UAT — NOT just IsDevelopment() —
+// since this app is currently running under ASPNETCORE_ENVIRONMENT=UAT
+// (a machine-level env var overriding launchSettings.json on some boxes),
+// and Swagger should stay reachable there without needing that var changed.
+// Still excluded from Production/Staging etc. Adjust the name list if your
+// UAT environment is named differently.
+if (app.Environment.IsDevelopment() || app.Environment.IsEnvironment("UAT"))
 {
     app.UseSwagger();
     app.UseSwaggerUI();
