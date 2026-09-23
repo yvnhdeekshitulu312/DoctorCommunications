@@ -1,16 +1,15 @@
 using Microsoft.AspNetCore.SignalR;
-using Microsoft.EntityFrameworkCore;
 
 public class CallHub : Hub
 {
     private readonly ConnectionStore _connections;
-    private readonly DoctorCommunicationsDbContext _db;
+    private readonly DoctorCommunicationsDal _dal;
     private readonly ILogger<CallHub> _logger;
 
-    public CallHub(ConnectionStore connections, DoctorCommunicationsDbContext db, ILogger<CallHub> logger)
+    public CallHub(ConnectionStore connections, DoctorCommunicationsDal dal, ILogger<CallHub> logger)
     {
         _connections = connections;
-        _db = db;
+        _dal = dal;
         _logger = logger;
     }
 
@@ -45,16 +44,13 @@ public class CallHub : Hub
         // group membership on page refresh / automatic reconnect. Pending
         // invites are re-delivered separately via GET /api/conversations/pending/{userId},
         // which the frontend calls on load instead of relying on a live push.
-        var conversationIds = await _db.ConversationParticipants
-            .Where(p => p.UserId == userId && p.Status == ParticipantStatus.Accepted)
-            .Select(p => p.ConversationId)
-            .ToListAsync();
+        var conversations = await _dal.GetMyConversationsAsync(userId);
 
-        _logger.LogInformation("RegisterUser: userId={UserId} rejoining {Count} conversation group(s)", userId, conversationIds.Count);
+        _logger.LogInformation("RegisterUser: userId={UserId} rejoining {Count} conversation group(s)", userId, conversations.Count);
 
-        foreach (var conversationId in conversationIds)
+        foreach (var conversation in conversations)
         {
-            await Groups.AddToGroupAsync(Context.ConnectionId, GroupName(conversationId));
+            await Groups.AddToGroupAsync(Context.ConnectionId, GroupName(conversation.ConversationId));
         }
     }
 
@@ -82,93 +78,84 @@ public class CallHub : Hub
             "StartChat: starterUserId={StarterUserId} starterName={StarterName} participantUserIds=[{ParticipantUserIds}]",
             starterUserId, starterName, string.Join(", ", participantUserIds));
 
-        var conversationId = Guid.NewGuid().ToString("N");
-        var now = DateTime.UtcNow;
-
-        var participants = new List<ChatParticipantEntity>
-        {
-            new() { ConversationId = conversationId, UserId = starterUserId, Name = starterName, Status = ParticipantStatus.Accepted, RespondedAtUtc = now }
-        };
+        var invitees = new List<ParticipantDto>();
         for (int i = 0; i < participantUserIds.Length; i++)
         {
             var name = i < participantNames.Length ? participantNames[i] : participantUserIds[i];
-            participants.Add(new ChatParticipantEntity { ConversationId = conversationId, UserId = participantUserIds[i], Name = name, Status = ParticipantStatus.Pending });
+            invitees.Add(new ParticipantDto(participantUserIds[i], name));
         }
 
-        _db.Conversations.Add(new ChatConversationEntity { Id = conversationId, CreatedByUserId = starterUserId, CreatedAtUtc = now });
-        _db.ConversationParticipants.AddRange(participants);
-        await _db.SaveChangesAsync();
+        var result = await _dal.CreateConversationAsync(
+            conversationId: null,
+            createdByUserId: starterUserId,
+            createdByName: starterName,
+            invitees: invitees);
 
-        var group = GroupName(conversationId);
+        var group = GroupName(result.ConversationId);
         await Groups.AddToGroupAsync(Context.ConnectionId, group);
 
         var invitePayload = new
         {
-            conversationId,
+            conversationId = result.ConversationId,
             starterUserId,
             starterName,
-            participants = participants.Select(p => new { userId = p.UserId, name = p.Name })
+            participants = result.Participants.Select(p => new { userId = p.UserId, name = p.Name })
         };
 
-        foreach (var userId in participantUserIds)
+        // De-duplicated by the stored procedure — iterate what actually got
+        // persisted (Pending rows) rather than the raw, possibly-duplicate
+        // input arrays.
+        foreach (var invitee in result.Participants.Where(p => p.Status == ParticipantStatus.Pending))
         {
-            var connectionId = _connections.Get(userId);
+            var connectionId = _connections.Get(invitee.UserId);
             if (connectionId is null)
             {
-                _logger.LogWarning("StartChat: invitee userId={UserId} has NO registered connection — will see it via pending-invites lookup next time they connect", userId);
+                _logger.LogWarning("StartChat: invitee userId={UserId} has NO registered connection — will see it via pending-invites lookup next time they connect", invitee.UserId);
                 continue;
             }
 
-            _logger.LogInformation("StartChat: inviting userId={UserId} connectionId={ConnectionId}", userId, connectionId);
+            _logger.LogInformation("StartChat: inviting userId={UserId} connectionId={ConnectionId}", invitee.UserId, connectionId);
             await Clients.Client(connectionId).SendAsync("ChatInvite", invitePayload);
         }
 
-        return conversationId;
+        return result.ConversationId;
     }
 
     public async Task AcceptChat(string conversationId, string userId)
     {
-        var participant = await _db.ConversationParticipants
-            .FirstOrDefaultAsync(p => p.ConversationId == conversationId && p.UserId == userId);
-        if (participant is null)
+        var result = await _dal.RespondToInviteAsync(conversationId, userId, accept: true);
+        if (!result.Updated)
         {
-            _logger.LogWarning("AcceptChat: no participant row for conversationId={ConversationId} userId={UserId}", conversationId, userId);
+            _logger.LogWarning("AcceptChat: no Pending row to update for conversationId={ConversationId} userId={UserId}", conversationId, userId);
             return;
         }
-
-        participant.Status = ParticipantStatus.Accepted;
-        participant.RespondedAtUtc = DateTime.UtcNow;
-        await _db.SaveChangesAsync();
 
         var group = GroupName(conversationId);
         await Groups.AddToGroupAsync(Context.ConnectionId, group);
 
+        var name = result.Participants.FirstOrDefault(p => p.UserId == userId)?.Name ?? "";
         _logger.LogInformation("AcceptChat: userId={UserId} joined conversationId={ConversationId}", userId, conversationId);
 
-        await Clients.OthersInGroup(group).SendAsync("ChatMemberJoined", new { conversationId, userId, name = participant.Name });
+        await Clients.OthersInGroup(group).SendAsync("ChatMemberJoined", new { conversationId, userId, name });
     }
 
     public async Task DeclineChat(string conversationId, string userId)
     {
-        var participant = await _db.ConversationParticipants
-            .FirstOrDefaultAsync(p => p.ConversationId == conversationId && p.UserId == userId);
-        if (participant is null)
+        var result = await _dal.RespondToInviteAsync(conversationId, userId, accept: false);
+        if (!result.Updated)
         {
-            _logger.LogWarning("DeclineChat: no participant row for conversationId={ConversationId} userId={UserId}", conversationId, userId);
+            _logger.LogWarning("DeclineChat: no Pending row to update for conversationId={ConversationId} userId={UserId}", conversationId, userId);
             return;
         }
 
-        participant.Status = ParticipantStatus.Declined;
-        participant.RespondedAtUtc = DateTime.UtcNow;
-        await _db.SaveChangesAsync();
-
+        var name = result.Participants.FirstOrDefault(p => p.UserId == userId)?.Name ?? "";
         _logger.LogInformation("DeclineChat: userId={UserId} declined conversationId={ConversationId}", userId, conversationId);
 
         // The decliner was never added to the group, so broadcast to the
         // group directly (not OthersInGroup) — everyone already in it
         // (starter + anyone who already accepted) should be told.
         await Clients.Group(GroupName(conversationId))
-            .SendAsync("ChatMemberDeclined", new { conversationId, userId, name = participant.Name });
+            .SendAsync("ChatMemberDeclined", new { conversationId, userId, name });
     }
 
     public async Task SendChatMessage(string conversationId, string senderUserId, string senderName, string text)
@@ -178,16 +165,14 @@ public class CallHub : Hub
             "SendChatMessage: conversationId={ConversationId} senderUserId={SenderUserId} group={Group}",
             conversationId, senderUserId, group);
 
-        var message = new ChatMessageEntity
+        var result = await _dal.SaveMessageAsync(conversationId, senderUserId, senderName, text);
+        if (result.Status != SaveMessageStatus.Saved)
         {
-            ConversationId = conversationId,
-            SenderUserId = senderUserId,
-            SenderName = senderName,
-            Text = text,
-            SentAtUtc = DateTime.UtcNow
-        };
-        _db.ChatMessages.Add(message);
-        await _db.SaveChangesAsync();
+            _logger.LogWarning(
+                "SendChatMessage: not saved (status={Status}) conversationId={ConversationId} senderUserId={SenderUserId}",
+                result.Status, conversationId, senderUserId);
+            return;
+        }
 
         await Clients.GroupExcept(group, new[] { Context.ConnectionId }).SendAsync("ChatMessageReceived", new
         {
@@ -195,7 +180,7 @@ public class CallHub : Hub
             senderUserId,
             senderName,
             text,
-            timestamp = message.SentAtUtc
+            timestamp = result.SentAtUtc
         });
     }
 

@@ -1,7 +1,8 @@
 // ChatModels.cs
-// EF Core entities for persisted doctor-to-doctor chat history.
-// Tables are prefixed DoctorCommunications_ so they stay clearly separated from the
-// hospital's core HIS schema even though they live in the same database.
+// DTOs for doctor-to-doctor chat. EF Core entities removed — persistence is now
+// handled by stored procedures (see DoctorCommunications_Schema.sql) through
+// DoctorCommunicationsDal. Property names serialize to camelCase, so the JSON
+// shape returned by the REST endpoints is unchanged for the Angular client.
 
 public enum ParticipantStatus
 {
@@ -10,36 +11,48 @@ public enum ParticipantStatus
     Declined
 }
 
-public class ChatConversationEntity
-{
-    public string Id { get; set; } = "";
-    public string CreatedByUserId { get; set; } = "";
-    public DateTime CreatedAtUtc { get; set; }
+/// <summary>Participant as returned to the client (userId + name).</summary>
+public record ParticipantDto(string UserId, string Name);
 
-    public List<ChatParticipantEntity> Participants { get; set; } = new();
-    public List<ChatMessageEntity> Messages { get; set; } = new();
+/// <summary>Participant with invite status — used server-side (hub fan-out).</summary>
+public record ParticipantStatusDto(string UserId, string Name, ParticipantStatus Status);
+
+/// <summary>GET /api/conversations/pending/{userId}</summary>
+public record PendingInviteDto(
+    string ConversationId,
+    string StarterUserId,
+    string? StarterName,
+    DateTime CreatedAtUtc,
+    List<ParticipantDto> Participants);
+
+/// <summary>GET /api/conversations/mine/{userId}</summary>
+public record MyConversationDto(
+    string ConversationId,
+    DateTime CreatedAtUtc,
+    DateTime? LastMessageAt,
+    string? LastMessageText,
+    List<ParticipantDto> Participants);
+
+/// <summary>GET /api/conversations/{conversationId}/messages</summary>
+public record ChatMessageDto(
+    long Id,
+    string SenderUserId,
+    string SenderName,
+    string Text,
+    DateTime Timestamp);
+
+/// <summary>Result of PR_DoctorComm_CreateConversation.</summary>
+public record CreateConversationResult(string ConversationId, List<ParticipantStatusDto> Participants);
+
+/// <summary>Result of PR_DoctorComm_RespondToInvite.</summary>
+public record RespondToInviteResult(bool Updated, List<ParticipantStatusDto> Participants);
+
+/// <summary>Result of PR_DoctorComm_SaveMessage.</summary>
+public enum SaveMessageStatus
+{
+    Saved = 0,
+    NotParticipant = 1,
+    EmptyText = 2
 }
 
-public class ChatParticipantEntity
-{
-    public int Id { get; set; }
-    public string ConversationId { get; set; } = "";
-    public string UserId { get; set; } = "";
-    public string Name { get; set; } = "";
-    public ParticipantStatus Status { get; set; }
-    public DateTime? RespondedAtUtc { get; set; }
-
-    public ChatConversationEntity? Conversation { get; set; }
-}
-
-public class ChatMessageEntity
-{
-    public long Id { get; set; }
-    public string ConversationId { get; set; } = "";
-    public string SenderUserId { get; set; } = "";
-    public string SenderName { get; set; } = "";
-    public string Text { get; set; } = "";
-    public DateTime SentAtUtc { get; set; }
-
-    public ChatConversationEntity? Conversation { get; set; }
-}
+public record SaveMessageResult(SaveMessageStatus Status, long? MessageId, DateTime? SentAtUtc);

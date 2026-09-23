@@ -1,6 +1,5 @@
 ﻿// Program.cs
 using Microsoft.AspNetCore.SignalR;
-using Microsoft.EntityFrameworkCore;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -15,8 +14,9 @@ builder.Services.AddSignalR(options =>
 });
 builder.Services.AddSingleton<ConnectionStore>();
 
-builder.Services.AddDbContext<DoctorCommunicationsDbContext>(options =>
-    options.UseSqlServer(builder.Configuration.GetConnectionString("DoctorCommunicationsDb")));
+// Chat persistence: stored procedures via ADO.NET (EF Core removed).
+// Uses ConnectionStrings:DoctorCommunicationsDb. Stateless → singleton.
+builder.Services.AddSingleton<DoctorCommunicationsDal>();
 
 // Allowed origins come from config (Cors:AllowedOrigins in appsettings*.json)
 // instead of being hardcoded, so deploying just needs the real origin(s) the
@@ -83,45 +83,17 @@ app.MapGet("/api/users/connection/{userId}", (string userId, ConnectionStore sto
 // The frontend calls this on load/reconnect instead of relying on a live
 // ChatInvite push, which only reaches a doctor who's already connected at
 // the moment StartChat runs.
-app.MapGet("/api/conversations/pending/{userId}", async (string userId, DoctorCommunicationsDbContext db) =>
+app.MapGet("/api/conversations/pending/{userId}", async (string userId, DoctorCommunicationsDal dal, CancellationToken ct) =>
 {
-    var pending = await db.ConversationParticipants
-        .Where(p => p.UserId == userId && p.Status == ParticipantStatus.Pending)
-        .Select(p => new
-        {
-            conversationId = p.ConversationId,
-            starterUserId = p.Conversation!.CreatedByUserId,
-            starterName = p.Conversation.Participants
-                .Where(o => o.UserId == p.Conversation.CreatedByUserId)
-                .Select(o => o.Name)
-                .FirstOrDefault(),
-            participants = p.Conversation.Participants
-                .Select(o => new { userId = o.UserId, name = o.Name })
-        })
-        .ToListAsync();
-
+    var pending = await dal.GetPendingInvitesAsync(userId, ct);
     return Results.Ok(pending);
 });
 
 // ── REST: this user's accepted conversations (for restoring the chat list
 // on page reload — the in-memory Angular state is gone after a refresh) ──
-app.MapGet("/api/conversations/mine/{userId}", async (string userId, DoctorCommunicationsDbContext db) =>
+app.MapGet("/api/conversations/mine/{userId}", async (string userId, DoctorCommunicationsDal dal, CancellationToken ct) =>
 {
-    var conversationIds = await db.ConversationParticipants
-        .Where(p => p.UserId == userId && p.Status == ParticipantStatus.Accepted)
-        .Select(p => p.ConversationId)
-        .ToListAsync();
-
-    var conversations = await db.ConversationParticipants
-        .Where(p => conversationIds.Contains(p.ConversationId) && p.Status == ParticipantStatus.Accepted)
-        .GroupBy(p => p.ConversationId)
-        .Select(g => new
-        {
-            conversationId = g.Key,
-            participants = g.Select(p => new { userId = p.UserId, name = p.Name })
-        })
-        .ToListAsync();
-
+    var conversations = await dal.GetMyConversationsAsync(userId, ct);
     return Results.Ok(conversations);
 });
 
@@ -130,24 +102,10 @@ app.MapGet("/api/conversations/mine/{userId}", async (string userId, DoctorCommu
 // — same trust model as the rest of this API (userId is caller-asserted,
 // no auth middleware here yet), but at least scopes history to conversations
 // you were actually let into.
-app.MapGet("/api/conversations/{conversationId}/messages", async (string conversationId, string callerUserId, DoctorCommunicationsDbContext db) =>
+app.MapGet("/api/conversations/{conversationId}/messages", async (string conversationId, string callerUserId, DoctorCommunicationsDal dal, CancellationToken ct) =>
 {
-    bool isParticipant = await db.ConversationParticipants.AnyAsync(p =>
-        p.ConversationId == conversationId && p.UserId == callerUserId && p.Status == ParticipantStatus.Accepted);
-
+    var (isParticipant, messages) = await dal.GetMessagesAsync(conversationId, callerUserId, ct);
     if (!isParticipant) return Results.StatusCode(StatusCodes.Status403Forbidden);
-
-    var messages = await db.ChatMessages
-        .Where(m => m.ConversationId == conversationId)
-        .OrderBy(m => m.SentAtUtc)
-        .Select(m => new
-        {
-            senderUserId = m.SenderUserId,
-            senderName = m.SenderName,
-            text = m.Text,
-            timestamp = m.SentAtUtc
-        })
-        .ToListAsync();
 
     return Results.Ok(messages);
 });
