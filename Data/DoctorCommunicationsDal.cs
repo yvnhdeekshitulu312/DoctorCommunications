@@ -90,7 +90,14 @@ public class DoctorCommunicationsDal
             while (await reader.ReadAsync(ct))
             {
                 if (byId.TryGetValue(reader.GetString("ConversationId"), out var conv))
-                    conv.Participants.Add(new ParticipantDto(reader.GetString("UserId"), reader.GetString("Name"), GetNullableString(reader, "PhotoPath")));
+                    conv.Participants.Add(new ParticipantDto(
+                        reader.GetString("UserId"),
+                        reader.GetString("Name"),
+                        GetNullableString(reader, "PhotoPath"),
+                        GetNullableString(reader, "DepartmentName"),
+                        HasColumn(reader, "IsOnline") && !reader.IsDBNull(reader.GetOrdinal("IsOnline"))
+                            ? reader.GetBoolean(reader.GetOrdinal("IsOnline"))
+                            : null));
             }
         }
 
@@ -200,7 +207,9 @@ public class DoctorCommunicationsDal
             participants = await ReadParticipantStatusesAsync(reader, ct);
         }
 
-        return new CreateConversationResult((string)idParam.Value, participants);
+        // NULL when the SP rejected the request (e.g. self chat / no other doctor → RETURN 3)
+        var createdId = idParam.Value as string ?? "";
+        return new CreateConversationResult(createdId, participants);
     }
 
     /// <summary>PR_DoctorComm_RespondToInvite (only changes a Pending row).</summary>
@@ -329,7 +338,44 @@ public class DoctorCommunicationsDal
         Designation:    GetNullableString(reader, "Designation"),
         CreatedAtUtc:   AsUtc(reader.GetDateTime("CreatedAtUtc")));
 
+    // ── Online status ─────────────────────────────────────────────────────
+
+    /// <summary>PR_DoctorComm_GetUsersOnlineStatus (latest login row per user).</summary>
+    public async Task<List<UserOnlineStatusDto>> GetUsersOnlineStatusAsync(IEnumerable<string> userIds, CancellationToken ct = default)
+    {
+        var csv = string.Join(",", userIds
+            .Where(id => !string.IsNullOrWhiteSpace(id))
+            .Select(id => id.Trim())
+            .Distinct());
+
+        var list = new List<UserOnlineStatusDto>();
+        if (csv.Length == 0) return list;
+
+        await using var conn = new SqlConnection(_connectionString);
+        await using var cmd = Sp(conn, "dbo.PR_DoctorComm_GetUsersOnlineStatus");
+        cmd.Parameters.Add("@UserIds", SqlDbType.NVarChar, -1).Value = csv;
+
+        await conn.OpenAsync(ct);
+        await using var reader = await cmd.ExecuteReaderAsync(ct);
+        while (await reader.ReadAsync(ct))
+        {
+            list.Add(new UserOnlineStatusDto(
+                UserId:       reader.GetString("UserId"),
+                IsOnline:     reader.GetBoolean("IsOnline"),
+                LastLoginAt:  GetNullableDateTime(reader, "LastLoginAt"),
+                LastLogoutAt: GetNullableDateTime(reader, "LastLogoutAt")));
+        }
+        return list;
+    }
+
     // ── Helpers ───────────────────────────────────────────────────────────
+
+    private static bool HasColumn(SqlDataReader r, string col)
+    {
+        for (int i = 0; i < r.FieldCount; i++)
+            if (string.Equals(r.GetName(i), col, StringComparison.OrdinalIgnoreCase)) return true;
+        return false;
+    }
 
     private static SqlCommand Sp(SqlConnection conn, string name) =>
         new(name, conn) { CommandType = CommandType.StoredProcedure, CommandTimeout = 30 };

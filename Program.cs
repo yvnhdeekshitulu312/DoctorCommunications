@@ -81,6 +81,18 @@ app.MapPost("/api/users/register-connection", (ConnectionRequest req, Connection
 });
 
 // ── REST: look up a user's current connectionId ───────────────────────
+// ── REST: online / offline from V_DBLogindetails ──────────────────────
+// GET /api/users/online-status?userIds=4926,6095
+app.MapGet("/api/users/online-status", async (string? userIds, DoctorCommunicationsDal dal, CancellationToken ct) =>
+{
+    var ids = (userIds ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+    if (ids.Length == 0) return Results.Ok(Array.Empty<UserOnlineStatusDto>());
+    if (ids.Length > 200) return Results.BadRequest("Too many userIds (max 200).");
+
+    var statuses = await dal.GetUsersOnlineStatusAsync(ids, ct);
+    return Results.Ok(statuses);
+});
+
 app.MapGet("/api/users/connection/{userId}", (string userId, ConnectionStore store, ILogger<Program> logger) =>
 {
     var connectionId = store.Get(userId);

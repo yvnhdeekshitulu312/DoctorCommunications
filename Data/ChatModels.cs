@@ -12,7 +12,7 @@ public enum ParticipantStatus
 }
 
 /// <summary>Participant as returned to the client (userId + name).</summary>
-public record ParticipantDto(string UserId, string Name, string? PhotoPath = null);
+public record ParticipantDto(string UserId, string Name, string? PhotoPath = null, string? DepartmentName = null, bool? IsOnline = null);
 
 /// <summary>Participant with invite status — used server-side (hub fan-out).</summary>
 public record ParticipantStatusDto(string UserId, string Name, ParticipantStatus Status, string? PhotoPath = null);
@@ -47,6 +47,9 @@ public record CreateConversationResult(string ConversationId, List<ParticipantSt
 
 /// <summary>Result of PR_DoctorComm_RespondToInvite.</summary>
 public record RespondToInviteResult(bool Updated, List<ParticipantStatusDto> Participants);
+
+/// <summary>GET /api/users/online-status — latest V_DBLogindetails row per user.</summary>
+public record UserOnlineStatusDto(string UserId, bool IsOnline, DateTime? LastLoginAt, DateTime? LastLogoutAt);
 
 /// <summary>Result of PR_DoctorComm_SaveMessage.</summary>
 public enum SaveMessageStatus

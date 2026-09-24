@@ -81,15 +81,27 @@ public class CallHub : Hub
         var invitees = new List<ParticipantDto>();
         for (int i = 0; i < participantUserIds.Length; i++)
         {
+            // Self chat is not allowed — skip the starter and blank ids
+            if (string.IsNullOrWhiteSpace(participantUserIds[i]) || participantUserIds[i] == starterUserId)
+                continue;
+
             var name = i < participantNames.Length ? participantNames[i] : participantUserIds[i];
             invitees.Add(new ParticipantDto(participantUserIds[i], name, PhotoPath: null)); // photo not sent by StartChat — read back from DB
         }
 
+        if (invitees.Count == 0)
+            throw new HubException("Select at least one other doctor to start a chat.");
+
+        // For a 1:1 chat the stored procedure returns the EXISTING conversation
+        // with this doctor (if any) instead of creating a duplicate.
         var result = await _dal.CreateConversationAsync(
             conversationId: null,
             createdByUserId: starterUserId,
             createdByName: starterName,
             invitees: invitees);
+
+        if (string.IsNullOrEmpty(result.ConversationId))
+            throw new HubException("Chat could not be started.");
 
         var group = GroupName(result.ConversationId);
         await Groups.AddToGroupAsync(Context.ConnectionId, group);
@@ -99,7 +111,7 @@ public class CallHub : Hub
             conversationId = result.ConversationId,
             starterUserId,
             starterName,
-            participants = result.Participants.Select(p => new { userId = p.UserId, name = p.Name })
+            participants = result.Participants.Select(p => new { userId = p.UserId, name = p.Name, photoPath = p.PhotoPath })
         };
 
         // De-duplicated by the stored procedure — iterate what actually got
@@ -133,10 +145,12 @@ public class CallHub : Hub
         var group = GroupName(conversationId);
         await Groups.AddToGroupAsync(Context.ConnectionId, group);
 
-        var name = result.Participants.FirstOrDefault(p => p.UserId == userId)?.Name ?? "";
+        var member = result.Participants.FirstOrDefault(p => p.UserId == userId);
+        var name = member?.Name ?? "";
+        var photoPath = member?.PhotoPath;
         _logger.LogInformation("AcceptChat: userId={UserId} joined conversationId={ConversationId}", userId, conversationId);
 
-        await Clients.OthersInGroup(group).SendAsync("ChatMemberJoined", new { conversationId, userId, name });
+        await Clients.OthersInGroup(group).SendAsync("ChatMemberJoined", new { conversationId, userId, name, photoPath });
     }
 
     public async Task DeclineChat(string conversationId, string userId)
