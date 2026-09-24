@@ -12,10 +12,10 @@ public enum ParticipantStatus
 }
 
 /// <summary>Participant as returned to the client (userId + name).</summary>
-public record ParticipantDto(string UserId, string Name);
+public record ParticipantDto(string UserId, string Name, string? PhotoPath = null);
 
 /// <summary>Participant with invite status — used server-side (hub fan-out).</summary>
-public record ParticipantStatusDto(string UserId, string Name, ParticipantStatus Status);
+public record ParticipantStatusDto(string UserId, string Name, ParticipantStatus Status, string? PhotoPath = null);
 
 /// <summary>GET /api/conversations/pending/{userId}</summary>
 public record PendingInviteDto(
@@ -39,7 +39,8 @@ public record ChatMessageDto(
     string SenderUserId,
     string SenderName,
     string Text,
-    DateTime Timestamp);
+    DateTime Timestamp,
+    string? PhotoPath = null);
 
 /// <summary>Result of PR_DoctorComm_CreateConversation.</summary>
 public record CreateConversationResult(string ConversationId, List<ParticipantStatusDto> Participants);
@@ -56,3 +57,29 @@ public enum SaveMessageStatus
 }
 
 public record SaveMessageResult(SaveMessageStatus Status, long? MessageId, DateTime? SentAtUtc);
+
+// ── Favorite doctors ─────────────────────────────────────────────────────
+
+/// <summary>GET /api/favorites/{ownerUserId} — one favorite doctor.</summary>
+public record FavoriteDto(
+    string FavoriteUserId,
+    string Name,
+    string? PhotoPath,
+    string? Designation,
+    DateTime CreatedAtUtc);
+
+/// <summary>POST /api/favorites body.</summary>
+public record AddFavoriteRequest(
+    string OwnerUserId,
+    string FavoriteUserId,
+    string Name,
+    string? PhotoPath = null,
+    string? Designation = null);
+
+/// <summary>Result of PR_DoctorComm_AddFavorite.</summary>
+public enum AddFavoriteStatus
+{
+    Saved = 0,
+    SelfFavorite = 1,
+    MissingIds = 2
+}

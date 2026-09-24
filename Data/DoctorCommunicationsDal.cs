@@ -50,7 +50,7 @@ public class DoctorCommunicationsDal
             while (await reader.ReadAsync(ct))
             {
                 if (byId.TryGetValue(reader.GetString("ConversationId"), out var invite))
-                    invite.Participants.Add(new ParticipantDto(reader.GetString("UserId"), reader.GetString("Name")));
+                    invite.Participants.Add(new ParticipantDto(reader.GetString("UserId"), reader.GetString("Name"), GetNullableString(reader, "PhotoPath")));
             }
         }
 
@@ -90,7 +90,7 @@ public class DoctorCommunicationsDal
             while (await reader.ReadAsync(ct))
             {
                 if (byId.TryGetValue(reader.GetString("ConversationId"), out var conv))
-                    conv.Participants.Add(new ParticipantDto(reader.GetString("UserId"), reader.GetString("Name")));
+                    conv.Participants.Add(new ParticipantDto(reader.GetString("UserId"), reader.GetString("Name"), GetNullableString(reader, "PhotoPath")));
             }
         }
 
@@ -123,7 +123,8 @@ public class DoctorCommunicationsDal
                     SenderUserId: reader.GetString("SenderUserId"),
                     SenderName:   reader.GetString("SenderName"),
                     Text:         reader.GetString("Text"),
-                    Timestamp:    AsUtc(reader.GetDateTime("SentAtUtc"))));
+                    Timestamp:    AsUtc(reader.GetDateTime("SentAtUtc")),
+                    PhotoPath:    GetNullableString(reader, "PhotoPath")));
             }
         } // reader must be closed before OUTPUT params are populated
 
@@ -258,6 +259,76 @@ public class DoctorCommunicationsDal
             sentParam.Value is DateTime dt ? AsUtc(dt) : null);
     }
 
+    // ── Favorites ─────────────────────────────────────────────────────────
+
+    /// <summary>PR_DoctorComm_GetFavorites</summary>
+    public async Task<List<FavoriteDto>> GetFavoritesAsync(string ownerUserId, CancellationToken ct = default)
+    {
+        await using var conn = new SqlConnection(_connectionString);
+        await using var cmd = Sp(conn, "dbo.PR_DoctorComm_GetFavorites");
+        cmd.Parameters.Add("@OwnerUserId", SqlDbType.NVarChar, 450).Value = ownerUserId;
+
+        await conn.OpenAsync(ct);
+        await using var reader = await cmd.ExecuteReaderAsync(ct);
+
+        var list = new List<FavoriteDto>();
+        while (await reader.ReadAsync(ct))
+            list.Add(ReadFavorite(reader));
+        return list;
+    }
+
+    /// <summary>
+    /// PR_DoctorComm_AddFavorite (upsert). Returns the saved favorite, or null
+    /// with a non-Saved status (self-favorite / missing ids).
+    /// </summary>
+    public async Task<(AddFavoriteStatus Status, FavoriteDto? Favorite)> AddFavoriteAsync(
+        AddFavoriteRequest req, CancellationToken ct = default)
+    {
+        await using var conn = new SqlConnection(_connectionString);
+        await using var cmd = Sp(conn, "dbo.PR_DoctorComm_AddFavorite");
+        cmd.Parameters.Add("@OwnerUserId", SqlDbType.NVarChar, 450).Value = (object?)req.OwnerUserId ?? DBNull.Value;
+        cmd.Parameters.Add("@FavoriteUserId", SqlDbType.NVarChar, 450).Value = (object?)req.FavoriteUserId ?? DBNull.Value;
+        cmd.Parameters.Add("@FavoriteName", SqlDbType.NVarChar, 200).Value = req.Name ?? "";
+        cmd.Parameters.Add("@PhotoPath", SqlDbType.NVarChar, 500).Value = (object?)req.PhotoPath ?? DBNull.Value;
+        cmd.Parameters.Add("@Designation", SqlDbType.NVarChar, 300).Value = (object?)req.Designation ?? DBNull.Value;
+        var returnParam = cmd.Parameters.Add("@ReturnValue", SqlDbType.Int);
+        returnParam.Direction = ParameterDirection.ReturnValue;
+
+        await conn.OpenAsync(ct);
+
+        FavoriteDto? saved = null;
+        await using (var reader = await cmd.ExecuteReaderAsync(ct))
+        {
+            if (await reader.ReadAsync(ct))
+                saved = ReadFavorite(reader);
+        } // reader must be closed before the return value is populated
+
+        var status = (AddFavoriteStatus)(returnParam.Value is int rc ? rc : (int)AddFavoriteStatus.MissingIds);
+        return (status, status == AddFavoriteStatus.Saved ? saved : null);
+    }
+
+    /// <summary>PR_DoctorComm_RemoveFavorite — true if a row was deleted.</summary>
+    public async Task<bool> RemoveFavoriteAsync(string ownerUserId, string favoriteUserId, CancellationToken ct = default)
+    {
+        await using var conn = new SqlConnection(_connectionString);
+        await using var cmd = Sp(conn, "dbo.PR_DoctorComm_RemoveFavorite");
+        cmd.Parameters.Add("@OwnerUserId", SqlDbType.NVarChar, 450).Value = ownerUserId;
+        cmd.Parameters.Add("@FavoriteUserId", SqlDbType.NVarChar, 450).Value = favoriteUserId;
+        var removedParam = cmd.Parameters.Add("@Removed", SqlDbType.Bit);
+        removedParam.Direction = ParameterDirection.Output;
+
+        await conn.OpenAsync(ct);
+        await cmd.ExecuteNonQueryAsync(ct);
+        return removedParam.Value is bool b && b;
+    }
+
+    private static FavoriteDto ReadFavorite(SqlDataReader reader) => new(
+        FavoriteUserId: reader.GetString("FavoriteUserId"),
+        Name:           reader.GetString("Name"),
+        PhotoPath:      GetNullableString(reader, "PhotoPath"),
+        Designation:    GetNullableString(reader, "Designation"),
+        CreatedAtUtc:   AsUtc(reader.GetDateTime("CreatedAtUtc")));
+
     // ── Helpers ───────────────────────────────────────────────────────────
 
     private static SqlCommand Sp(SqlConnection conn, string name) =>
@@ -269,7 +340,7 @@ public class DoctorCommunicationsDal
         while (await reader.ReadAsync(ct))
         {
             var status = Enum.TryParse<ParticipantStatus>(reader.GetString("Status"), out var s) ? s : ParticipantStatus.Pending;
-            list.Add(new ParticipantStatusDto(reader.GetString("UserId"), reader.GetString("Name"), status));
+            list.Add(new ParticipantStatusDto(reader.GetString("UserId"), reader.GetString("Name"), status, GetNullableString(reader, "PhotoPath")));
         }
         return list;
     }

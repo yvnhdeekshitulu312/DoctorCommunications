@@ -41,6 +41,14 @@ builder.Services.AddCors(options =>
 
 var app = builder.Build();
 
+// Log the CORS origins actually loaded for this environment — the #1 cause of
+// "No 'Access-Control-Allow-Origin' header" is the list being empty or missing
+// the calling origin (e.g. http://localhost:4200) in appsettings.{Environment}.json.
+if (allowedOrigins.Length == 0)
+    app.Logger.LogWarning("CORS: Cors:AllowedOrigins is EMPTY for environment {Env} — every browser call from Angular will be blocked.", app.Environment.EnvironmentName);
+else
+    app.Logger.LogInformation("CORS: environment={Env} allowed origins = {Origins}", app.Environment.EnvironmentName, string.Join(", ", allowedOrigins));
+
 // ── Middleware ─────────────────────────────────────────────────────────
 // Swagger enabled for Development and UAT — NOT just IsDevelopment() —
 // since this app is currently running under ASPNETCORE_ENVIRONMENT=UAT
@@ -54,8 +62,11 @@ if (app.Environment.IsDevelopment() || app.Environment.IsEnvironment("UAT"))
     app.UseSwaggerUI();
 }
 
-app.UseHttpsRedirection();
+// CORS must run BEFORE HTTPS redirection: a CORS preflight (OPTIONS) that gets
+// a 307 redirect to https fails in the browser with a "preflight doesn't pass
+// access control check" error instead of reaching the CORS middleware.
 app.UseCors("AllowAngular");
+app.UseHttpsRedirection();
 
 // ── SignalR Hub ────────────────────────────────────────────────────────
 app.MapHub<CallHub>("/hubs/call");
@@ -108,6 +119,36 @@ app.MapGet("/api/conversations/{conversationId}/messages", async (string convers
     if (!isParticipant) return Results.StatusCode(StatusCodes.Status403Forbidden);
 
     return Results.Ok(messages);
+});
+
+// ── REST: favorite doctors ─────────────────────────────────────────────
+// Per-doctor list of favorite colleagues shown at the top of the chat sidebar.
+// Same trust model as the rest of this API (userId is caller-asserted).
+app.MapGet("/api/favorites/{ownerUserId}", async (string ownerUserId, DoctorCommunicationsDal dal, CancellationToken ct) =>
+{
+    var favorites = await dal.GetFavoritesAsync(ownerUserId, ct);
+    return Results.Ok(favorites);
+});
+
+app.MapPost("/api/favorites", async (AddFavoriteRequest req, DoctorCommunicationsDal dal, CancellationToken ct) =>
+{
+    if (string.IsNullOrWhiteSpace(req.OwnerUserId) || string.IsNullOrWhiteSpace(req.FavoriteUserId))
+        return Results.BadRequest("OwnerUserId and FavoriteUserId are required.");
+    if (req.OwnerUserId == req.FavoriteUserId)
+        return Results.BadRequest("You can't add yourself as a favorite.");
+
+    var (status, favorite) = await dal.AddFavoriteAsync(req, ct);
+    return status == AddFavoriteStatus.Saved && favorite is not null
+        ? Results.Ok(favorite)
+        : Results.BadRequest($"Favorite not saved ({status}).");
+});
+
+// Idempotent: returns 200 with removed=false if it was already gone, so the
+// Angular optimistic update never has to roll back for a double-click.
+app.MapDelete("/api/favorites/{ownerUserId}/{favoriteUserId}", async (string ownerUserId, string favoriteUserId, DoctorCommunicationsDal dal, CancellationToken ct) =>
+{
+    var removed = await dal.RemoveFavoriteAsync(ownerUserId, favoriteUserId, ct);
+    return Results.Ok(new { removed });
 });
 
 // ── REST: nurse initiates a call ──────────────────────────────────────

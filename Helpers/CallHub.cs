@@ -82,7 +82,7 @@ public class CallHub : Hub
         for (int i = 0; i < participantUserIds.Length; i++)
         {
             var name = i < participantNames.Length ? participantNames[i] : participantUserIds[i];
-            invitees.Add(new ParticipantDto(participantUserIds[i], name));
+            invitees.Add(new ParticipantDto(participantUserIds[i], name, PhotoPath: null)); // photo not sent by StartChat — read back from DB
         }
 
         var result = await _dal.CreateConversationAsync(
