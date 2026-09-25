@@ -18,6 +18,13 @@ builder.Services.AddSingleton<ConnectionStore>();
 // Uses ConnectionStrings:DoctorCommunicationsDb. Stateless → singleton.
 builder.Services.AddSingleton<DoctorCommunicationsDal>();
 
+// Document sharing: uploads go to GCS under Gcs:BaseFolder ("DoctorCommunications/
+// SharedDocuments" by default) — a prefix dedicated to this feature, kept separate
+// from any other application's use of the same bucket. StorageClient is created
+// once from the service-account credentials at Gcs:CredentialsPath → singleton.
+builder.Services.Configure<GcsOptions>(builder.Configuration.GetSection("Gcs"));
+builder.Services.AddSingleton<IDocumentStorageService, GcsDocumentStorageService>();
+
 // Allowed origins come from config (Cors:AllowedOrigins in appsettings*.json)
 // instead of being hardcoded, so deploying just needs the real origin(s) the
 // Angular app is served from added to appsettings.json / appsettings.Production.json
@@ -70,6 +77,9 @@ app.UseHttpsRedirection();
 
 // ── SignalR Hub ────────────────────────────────────────────────────────
 app.MapHub<CallHub>("/hubs/call");
+
+// ── REST: doctor-to-doctor document sharing ─────────────────────────────
+app.MapDocumentEndpoints();
 
 // ── REST: register a user's connectionId ──────────────────────────────
 // (kept for HTTP-only flows; prefer SignalR RegisterUser method instead)

@@ -86,3 +86,17 @@ public enum AddFavoriteStatus
     SelfFavorite = 1,
     MissingIds = 2
 }
+
+// ── Shared documents ─────────────────────────────────────────────────────
+
+/// <summary>A document shared inside a conversation (metadata only — bytes live in GCS).</summary>
+public record SharedDocumentDto(
+    long Id,
+    string ConversationId,
+    string UploaderUserId,
+    string UploaderName,
+    string FileName,
+    string ContentType,
+    long SizeBytes,
+    string ObjectKey,
+    DateTime UploadedAtUtc);

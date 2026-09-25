@@ -12,3 +12,32 @@ Accept: application/json
 
 GET {{DoctorCommunications_HostAddress}}/api/conversations/mine/4470
 Accept: application/json
+
+###
+
+GET {{DoctorCommunications_HostAddress}}/api/conversations/{{conversationId}}/documents?callerUserId=4470
+Accept: application/json
+
+###
+
+GET {{DoctorCommunications_HostAddress}}/api/documents/1/download?callerUserId=4470
+
+###
+
+POST {{DoctorCommunications_HostAddress}}/api/conversations/{{conversationId}}/documents
+Content-Type: multipart/form-data; boundary=DocBoundary
+
+--DocBoundary
+Content-Disposition: form-data; name="uploaderUserId"
+
+4470
+--DocBoundary
+Content-Disposition: form-data; name="uploaderName"
+
+Dr. Test
+--DocBoundary
+Content-Disposition: form-data; name="file"; filename="sample.pdf"
+Content-Type: application/pdf
+
+< ./sample.pdf
+--DocBoundary--

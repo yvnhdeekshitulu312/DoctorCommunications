@@ -94,6 +94,33 @@ IF NOT EXISTS (SELECT 1 FROM sys.indexes
         ON dbo.DoctorCommunications_ChatMessages (ConversationId, SentAtUtc);
 GO
 
+IF OBJECT_ID(N'dbo.DoctorCommunications_SharedDocuments', N'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.DoctorCommunications_SharedDocuments
+    (
+        Id              BIGINT IDENTITY(1,1) NOT NULL,
+        ConversationId  NVARCHAR(450)        NOT NULL,   -- DoctorCommunications_Conversations.Id — no FK: that table's deployed name is renamed by an external process, not the plain name below
+        UploaderUserId  NVARCHAR(450)        NOT NULL,
+        UploaderName    NVARCHAR(200)        NOT NULL,
+        FileName        NVARCHAR(500)        NOT NULL,
+        ContentType     NVARCHAR(200)        NOT NULL,
+        SizeBytes       BIGINT               NOT NULL,
+        ObjectKey       NVARCHAR(1000)       NOT NULL,   -- GCS object key, e.g. DoctorCommunications/SharedDocuments/{conversationId}/{yyyy-MM-dd}/{guid}-{fileName}
+        UploadedAtUtc   DATETIME2(3)         NOT NULL
+            CONSTRAINT DF_DoctorCommunications_SharedDocuments_UploadedAtUtc DEFAULT (SYSUTCDATETIME()),
+
+        CONSTRAINT PK_DoctorCommunications_SharedDocuments PRIMARY KEY CLUSTERED (Id)
+    );
+END
+GO
+
+IF NOT EXISTS (SELECT 1 FROM sys.indexes
+               WHERE name = N'IX_DoctorCommunications_SharedDocuments_ConversationId_UploadedAtUtc'
+                 AND object_id = OBJECT_ID(N'dbo.DoctorCommunications_SharedDocuments'))
+    CREATE NONCLUSTERED INDEX IX_DoctorCommunications_SharedDocuments_ConversationId_UploadedAtUtc
+        ON dbo.DoctorCommunications_SharedDocuments (ConversationId, UploadedAtUtc);
+GO
+
 /* ─────────────────────────────────────────────────────────────────────────────
    2. TABLE TYPE — invitee list for PR_DoctorComm_CreateConversation
    ───────────────────────────────────────────────────────────────────────────── */
@@ -361,5 +388,87 @@ BEGIN
                             AND  UserId         = @UserId
                             AND  Status         = N'Accepted')
              THEN 1 ELSE 0 END;
+END
+GO
+
+/* 3.9  Save a shared-document's metadata (GCS already holds the bytes at
+        @ObjectKey by the time this runs). Uploader must be an Accepted
+        participant. RETURN 0 = saved, 1 = uploader not an accepted participant.
+        Returns the saved row as a result set.                                   */
+CREATE OR ALTER PROCEDURE dbo.PR_DoctorComm_SaveSharedDocument
+    @ConversationId  NVARCHAR(450),
+    @UploaderUserId  NVARCHAR(450),
+    @UploaderName    NVARCHAR(200),
+    @FileName        NVARCHAR(500),
+    @ContentType     NVARCHAR(200),
+    @SizeBytes       BIGINT,
+    @ObjectKey       NVARCHAR(1000)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    IF NOT EXISTS (SELECT 1
+                   FROM   dbo.DoctorCommunications_ConversationParticipants
+                   WHERE  ConversationId = @ConversationId
+                     AND  UserId         = @UploaderUserId
+                     AND  Status         = N'Accepted')
+        RETURN 1;
+
+    DECLARE @Id BIGINT;
+    DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
+
+    INSERT INTO dbo.DoctorCommunications_SharedDocuments
+        (ConversationId, UploaderUserId, UploaderName, FileName, ContentType, SizeBytes, ObjectKey, UploadedAtUtc)
+    VALUES
+        (@ConversationId, @UploaderUserId, @UploaderName, @FileName, @ContentType, @SizeBytes, @ObjectKey, @Now);
+
+    SET @Id = SCOPE_IDENTITY();
+
+    SELECT Id, ConversationId, UploaderUserId, UploaderName, FileName, ContentType, SizeBytes, ObjectKey, UploadedAtUtc
+    FROM   dbo.DoctorCommunications_SharedDocuments
+    WHERE  Id = @Id;
+
+    RETURN 0;
+END
+GO
+
+/* 3.10 Documents shared in a conversation (GET /api/conversations/{id}/documents?callerUserId=)
+        @IsParticipant (OUTPUT) = 0 → caller is not an accepted participant,
+        no rows are returned (API responds 403).                                 */
+CREATE OR ALTER PROCEDURE dbo.PR_DoctorComm_GetConversationDocuments
+    @ConversationId  NVARCHAR(450),
+    @CallerUserId    NVARCHAR(450),
+    @IsParticipant   BIT = 0 OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SET @IsParticipant =
+        CASE WHEN EXISTS (SELECT 1
+                          FROM   dbo.DoctorCommunications_ConversationParticipants
+                          WHERE  ConversationId = @ConversationId
+                            AND  UserId         = @CallerUserId
+                            AND  Status         = N'Accepted')
+             THEN 1 ELSE 0 END;
+
+    SELECT d.Id, d.ConversationId, d.UploaderUserId, d.UploaderName, d.FileName, d.ContentType, d.SizeBytes, d.ObjectKey, d.UploadedAtUtc
+    FROM   dbo.DoctorCommunications_SharedDocuments d
+    WHERE  @IsParticipant   = 1
+      AND  d.ConversationId = @ConversationId
+    ORDER BY d.UploadedAtUtc, d.Id;
+END
+GO
+
+/* 3.11 A single shared document by id — used by the download endpoint to look
+        up the ObjectKey and the owning ConversationId for the permission check. */
+CREATE OR ALTER PROCEDURE dbo.PR_DoctorComm_GetSharedDocument
+    @Id BIGINT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT Id, ConversationId, UploaderUserId, UploaderName, FileName, ContentType, SizeBytes, ObjectKey, UploadedAtUtc
+    FROM   dbo.DoctorCommunications_SharedDocuments
+    WHERE  Id = @Id;
 END
 GO

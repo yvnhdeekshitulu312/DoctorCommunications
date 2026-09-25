@@ -368,6 +368,89 @@ public class DoctorCommunicationsDal
         return list;
     }
 
+    // ── Shared documents ─────────────────────────────────────────────────
+
+    /// <summary>PR_DoctorComm_SaveSharedDocument (sender must be Accepted). Returns null if not saved.</summary>
+    public async Task<SharedDocumentDto?> SaveSharedDocumentAsync(
+        string conversationId, string uploaderUserId, string uploaderName,
+        string fileName, string contentType, long sizeBytes, string objectKey,
+        CancellationToken ct = default)
+    {
+        await using var conn = new SqlConnection(_connectionString);
+        await using var cmd = Sp(conn, "dbo.PR_DoctorComm_SaveSharedDocument");
+        cmd.Parameters.Add("@ConversationId", SqlDbType.NVarChar, 450).Value = conversationId;
+        cmd.Parameters.Add("@UploaderUserId", SqlDbType.NVarChar, 450).Value = uploaderUserId;
+        cmd.Parameters.Add("@UploaderName", SqlDbType.NVarChar, 200).Value = uploaderName ?? "";
+        cmd.Parameters.Add("@FileName", SqlDbType.NVarChar, 500).Value = fileName;
+        cmd.Parameters.Add("@ContentType", SqlDbType.NVarChar, 200).Value = contentType;
+        cmd.Parameters.Add("@SizeBytes", SqlDbType.BigInt).Value = sizeBytes;
+        cmd.Parameters.Add("@ObjectKey", SqlDbType.NVarChar, 1000).Value = objectKey;
+        var returnParam = cmd.Parameters.Add("@ReturnValue", SqlDbType.Int);
+        returnParam.Direction = ParameterDirection.ReturnValue;
+
+        await conn.OpenAsync(ct);
+
+        SharedDocumentDto? saved = null;
+        await using (var reader = await cmd.ExecuteReaderAsync(ct))
+        {
+            if (await reader.ReadAsync(ct))
+                saved = ReadSharedDocument(reader);
+        } // reader must be closed before the return value is populated
+
+        var status = returnParam.Value is int rc ? rc : 1;
+        return status == 0 ? saved : null;
+    }
+
+    /// <summary>
+    /// PR_DoctorComm_GetConversationDocuments.
+    /// IsParticipant = false → caller isn't an accepted participant (API returns 403).
+    /// </summary>
+    public async Task<(bool IsParticipant, List<SharedDocumentDto> Documents)> GetConversationDocumentsAsync(
+        string conversationId, string callerUserId, CancellationToken ct = default)
+    {
+        await using var conn = new SqlConnection(_connectionString);
+        await using var cmd = Sp(conn, "dbo.PR_DoctorComm_GetConversationDocuments");
+        cmd.Parameters.Add("@ConversationId", SqlDbType.NVarChar, 450).Value = conversationId;
+        cmd.Parameters.Add("@CallerUserId", SqlDbType.NVarChar, 450).Value = callerUserId;
+        var isParticipantParam = cmd.Parameters.Add("@IsParticipant", SqlDbType.Bit);
+        isParticipantParam.Direction = ParameterDirection.Output;
+
+        await conn.OpenAsync(ct);
+
+        var documents = new List<SharedDocumentDto>();
+        await using (var reader = await cmd.ExecuteReaderAsync(ct))
+        {
+            while (await reader.ReadAsync(ct))
+                documents.Add(ReadSharedDocument(reader));
+        } // reader must be closed before OUTPUT params are populated
+
+        bool isParticipant = isParticipantParam.Value is bool b && b;
+        return (isParticipant, documents);
+    }
+
+    /// <summary>PR_DoctorComm_GetSharedDocument — single document row, or null if it doesn't exist.</summary>
+    public async Task<SharedDocumentDto?> GetSharedDocumentAsync(long documentId, CancellationToken ct = default)
+    {
+        await using var conn = new SqlConnection(_connectionString);
+        await using var cmd = Sp(conn, "dbo.PR_DoctorComm_GetSharedDocument");
+        cmd.Parameters.Add("@Id", SqlDbType.BigInt).Value = documentId;
+
+        await conn.OpenAsync(ct);
+        await using var reader = await cmd.ExecuteReaderAsync(ct);
+        return await reader.ReadAsync(ct) ? ReadSharedDocument(reader) : null;
+    }
+
+    private static SharedDocumentDto ReadSharedDocument(SqlDataReader reader) => new(
+        Id:             reader.GetInt64("Id"),
+        ConversationId: reader.GetString("ConversationId"),
+        UploaderUserId: reader.GetString("UploaderUserId"),
+        UploaderName:   reader.GetString("UploaderName"),
+        FileName:       reader.GetString("FileName"),
+        ContentType:    reader.GetString("ContentType"),
+        SizeBytes:      reader.GetInt64("SizeBytes"),
+        ObjectKey:      reader.GetString("ObjectKey"),
+        UploadedAtUtc:  AsUtc(reader.GetDateTime("UploadedAtUtc")));
+
     // ── Helpers ───────────────────────────────────────────────────────────
 
     private static bool HasColumn(SqlDataReader r, string col)
