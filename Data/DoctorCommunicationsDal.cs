@@ -79,7 +79,11 @@ public class DoctorCommunicationsDal
                 CreatedAtUtc:    AsUtc(reader.GetDateTime("CreatedAtUtc")),
                 LastMessageAt:   lastAt.HasValue ? AsUtc(lastAt.Value) : null,
                 LastMessageText: GetNullableString(reader, "LastMessageText"),
-                Participants:    new List<ParticipantDto>());
+                Participants:    new List<ParticipantDto>(),
+                DocumentCount:   HasColumn(reader, "DocumentCount") && !reader.IsDBNull(reader.GetOrdinal("DocumentCount"))
+                                     ? Convert.ToInt32(reader["DocumentCount"])
+                                     : 0,
+                Documents:       new List<SharedDocumentDto>());
             conversations.Add(conv);
             byId[conv.ConversationId] = conv;
         }
@@ -98,6 +102,16 @@ public class DoctorCommunicationsDal
                         HasColumn(reader, "IsOnline") && !reader.IsDBNull(reader.GetOrdinal("IsOnline"))
                             ? reader.GetBoolean(reader.GetOrdinal("IsOnline"))
                             : null));
+            }
+        }
+
+        // Result set 3 — shared documents (optional: older SP versions don't return it)
+        if (await reader.NextResultAsync(ct))
+        {
+            while (await reader.ReadAsync(ct))
+            {
+                if (byId.TryGetValue(reader.GetString("ConversationId"), out var conv))
+                    conv.Documents!.Add(ReadSharedDocument(reader));
             }
         }
 
@@ -440,15 +454,18 @@ public class DoctorCommunicationsDal
         return await reader.ReadAsync(ct) ? ReadSharedDocument(reader) : null;
     }
 
+    // Shared by SaveSharedDocument / GetConversationDocuments / GetSharedDocument
+    // and result set 3 of GetMyConversations. int or bigint columns and NULLs
+    // are tolerated (the view may expose ID / SizeBytes as int).
     private static SharedDocumentDto ReadSharedDocument(SqlDataReader reader) => new(
-        Id:             reader.GetInt64("Id"),
+        Id:             Convert.ToInt64(reader["Id"]),
         ConversationId: reader.GetString("ConversationId"),
-        UploaderUserId: reader.GetString("UploaderUserId"),
-        UploaderName:   reader.GetString("UploaderName"),
-        FileName:       reader.GetString("FileName"),
-        ContentType:    reader.GetString("ContentType"),
-        SizeBytes:      reader.GetInt64("SizeBytes"),
-        ObjectKey:      reader.GetString("ObjectKey"),
+        UploaderUserId: Convert.ToString(reader["UploaderUserId"]) ?? "",
+        UploaderName:   GetNullableString(reader, "UploaderName") ?? "",
+        FileName:       Convert.ToString(reader["FileName"]) ?? "",
+        ContentType:    GetNullableString(reader, "ContentType") ?? "application/octet-stream",
+        SizeBytes:      reader["SizeBytes"] is DBNull ? 0 : Convert.ToInt64(reader["SizeBytes"]),
+        ObjectKey:      GetNullableString(reader, "ObjectKey") ?? "",
         UploadedAtUtc:  AsUtc(reader.GetDateTime("UploadedAtUtc")));
 
     // ── Helpers ───────────────────────────────────────────────────────────

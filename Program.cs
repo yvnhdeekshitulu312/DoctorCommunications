@@ -135,6 +135,7 @@ app.MapGet("/api/conversations/mine/{userId}", async (string userId, DoctorCommu
 // — same trust model as the rest of this API (userId is caller-asserted,
 // no auth middleware here yet), but at least scopes history to conversations
 // you were actually let into.
+// (GET /api/conversations/{conversationId}/documents is mapped in MapDocumentEndpoints)
 app.MapGet("/api/conversations/{conversationId}/messages", async (string conversationId, string callerUserId, DoctorCommunicationsDal dal, CancellationToken ct) =>
 {
     var (isParticipant, messages) = await dal.GetMessagesAsync(conversationId, callerUserId, ct);

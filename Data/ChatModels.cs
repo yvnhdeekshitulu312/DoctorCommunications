@@ -31,7 +31,9 @@ public record MyConversationDto(
     DateTime CreatedAtUtc,
     DateTime? LastMessageAt,
     string? LastMessageText,
-    List<ParticipantDto> Participants);
+    List<ParticipantDto> Participants,
+    int DocumentCount = 0,
+    List<SharedDocumentDto>? Documents = null);
 
 /// <summary>GET /api/conversations/{conversationId}/messages</summary>
 public record ChatMessageDto(
@@ -89,7 +91,10 @@ public enum AddFavoriteStatus
 
 // ── Shared documents ─────────────────────────────────────────────────────
 
-/// <summary>A document shared inside a conversation (metadata only — bytes live in GCS).</summary>
+/// <summary>
+/// A document shared inside a conversation (metadata only — bytes live in GCS).
+/// Also returned per conversation in GET /api/conversations/mine/{userId}.
+/// </summary>
 public record SharedDocumentDto(
     long Id,
     string ConversationId,
