@@ -33,7 +33,11 @@ public record MyConversationDto(
     string? LastMessageText,
     List<ParticipantDto> Participants,
     int DocumentCount = 0,
-    List<SharedDocumentDto>? Documents = null);
+    List<SharedDocumentDto>? Documents = null,
+    int UnreadCount = 0);
+
+/// <summary>POST /api/conversations/{conversationId}/read body.</summary>
+public record MarkReadRequest(string UserId);
 
 /// <summary>GET /api/conversations/{conversationId}/messages</summary>
 public record ChatMessageDto(

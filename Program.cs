@@ -124,10 +124,36 @@ app.MapGet("/api/conversations/pending/{userId}", async (string userId, DoctorCo
 
 // ── REST: this user's accepted conversations (for restoring the chat list
 // on page reload — the in-memory Angular state is gone after a refresh) ──
-app.MapGet("/api/conversations/mine/{userId}", async (string userId, DoctorCommunicationsDal dal, CancellationToken ct) =>
+// Each row carries this user's server-side unreadCount (PR_DoctorComm_GetUnreadCounts),
+// so the badge survives logout/login and other devices.
+app.MapGet("/api/conversations/mine/{userId}", async (string userId, DoctorCommunicationsDal dal, ILogger<Program> logger, CancellationToken ct) =>
 {
     var conversations = await dal.GetMyConversationsAsync(userId, ct);
-    return Results.Ok(conversations);
+
+    Dictionary<string, int> unread;
+    try
+    {
+        unread = await dal.GetUnreadCountsAsync(userId, ct);
+    }
+    catch (Microsoft.Data.SqlClient.SqlException ex)
+    {
+        // DoctorCommunications_UnreadCounts.sql not deployed yet — keep the chat
+        // list working (unreadCount = 0) rather than failing the whole call.
+        logger.LogWarning(ex, "GetUnreadCounts failed for userId={UserId}; returning conversations without unread counts", userId);
+        unread = new();
+    }
+
+    return Results.Ok(conversations.Select(c =>
+        c with { UnreadCount = unread.GetValueOrDefault(c.ConversationId) }));
+});
+
+// ── REST: mark a conversation read for this user (up to "now", server clock) ──
+app.MapPost("/api/conversations/{conversationId}/read", async (string conversationId, MarkReadRequest req, DoctorCommunicationsDal dal, CancellationToken ct) =>
+{
+    if (string.IsNullOrWhiteSpace(req?.UserId)) return Results.BadRequest("UserId is required.");
+
+    var saved = await dal.MarkConversationReadAsync(conversationId, req.UserId, ct);
+    return saved ? Results.NoContent() : Results.StatusCode(StatusCodes.Status403Forbidden);
 });
 
 // ── REST: message history for a conversation ───────────────────────────

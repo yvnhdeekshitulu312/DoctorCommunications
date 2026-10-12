@@ -282,6 +282,39 @@ public class DoctorCommunicationsDal
             sentParam.Value is DateTime dt ? AsUtc(dt) : null);
     }
 
+    // ── Read state / unread counts ────────────────────────────────────────
+
+    /// <summary>PR_DoctorComm_GetUnreadCounts — conversationId → unread count (accepted conversations only).</summary>
+    public async Task<Dictionary<string, int>> GetUnreadCountsAsync(string userId, CancellationToken ct = default)
+    {
+        await using var conn = new SqlConnection(_connectionString);
+        await using var cmd = Sp(conn, "dbo.PR_DoctorComm_GetUnreadCounts");
+        cmd.Parameters.Add("@UserId", SqlDbType.NVarChar, 450).Value = userId;
+
+        await conn.OpenAsync(ct);
+        await using var reader = await cmd.ExecuteReaderAsync(ct);
+
+        var counts = new Dictionary<string, int>();
+        while (await reader.ReadAsync(ct))
+            counts[reader.GetString("ConversationId")] = Convert.ToInt32(reader["UnreadCount"]);
+        return counts;
+    }
+
+    /// <summary>PR_DoctorComm_MarkConversationRead — false if the user isn't an accepted participant.</summary>
+    public async Task<bool> MarkConversationReadAsync(string conversationId, string userId, CancellationToken ct = default)
+    {
+        await using var conn = new SqlConnection(_connectionString);
+        await using var cmd = Sp(conn, "dbo.PR_DoctorComm_MarkConversationRead");
+        cmd.Parameters.Add("@ConversationId", SqlDbType.NVarChar, 450).Value = conversationId;
+        cmd.Parameters.Add("@UserId", SqlDbType.NVarChar, 450).Value = userId;
+        var returnParam = cmd.Parameters.Add("@ReturnValue", SqlDbType.Int);
+        returnParam.Direction = ParameterDirection.ReturnValue;
+
+        await conn.OpenAsync(ct);
+        await cmd.ExecuteNonQueryAsync(ct);
+        return returnParam.Value is int rc && rc == 0;
+    }
+
     // ── Favorites ─────────────────────────────────────────────────────────
 
     /// <summary>PR_DoctorComm_GetFavorites</summary>
